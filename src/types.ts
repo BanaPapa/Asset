@@ -1,0 +1,96 @@
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
+
+export type FieldType =
+  | 'text'
+  | 'textarea'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'multiselect'
+  | 'color'
+  | 'assetRef'
+  | 'slider';
+
+export interface CustomField {
+  key: string;
+  label: string;
+  type: FieldType;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  options?: string[];
+  refCategory?: string;
+  multiple?: boolean;
+}
+
+export interface Category {
+  key: string;
+  name: string;
+  fields: CustomField[];
+  collapsed?: boolean;
+}
+
+export interface AssetImageMeta {
+  fileName: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  size: number;
+}
+
+export interface Asset {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  tags: string[];
+  rarity: Rarity;
+  image?: AssetImageMeta;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  data: Record<string, unknown>;
+}
+
+export interface AssetImageRecord {
+  assetId: string;
+  fileName: string;
+  mimeType: string;
+  blob: Blob;
+  thumbnail: Blob;
+}
+
+export interface ProjectState {
+  projectName: string;
+  categories: Category[];
+  assets: Asset[];
+  selectedIds: string[];
+  theme: 'system' | 'light' | 'dark';
+  viewMode: 'list' | 'grid';
+  search: string;
+}
+
+export interface ExportPayload {
+  meta: {
+    projectName: string;
+    exportedAt: string;
+    schemaVersion: number;
+  };
+  categories: Category[];
+  assets: Array<{
+    id: string;
+    category: string;
+    name: string;
+    rarity: Rarity;
+    tags: string[];
+    description: string;
+    image: string | null;
+    data: Record<string, unknown>;
+  }>;
+}
+
+export interface ValidationIssue {
+  level: 'error' | 'warning';
+  assetId?: string;
+  message: string;
+}
