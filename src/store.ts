@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { db, initialProjectState, loadSnapshot, saveImportBackup, saveSnapshot } from './db';
 import { createAsset, defaultDataForCategory, slugify } from './defaults';
-import type { Asset, Category, CustomField, ProjectState, Rarity } from './types';
-import { findIncomingReferences, safeId, setNested } from './utils';
+import type { Asset, Category, CustomField, MediaSlot, ProjectState, Rarity, SpriteSheetMeta } from './types';
+import { findIncomingReferences, moveArrayItem, safeId, setNested } from './utils';
 
 interface EditorStore extends ProjectState {
   hydrated: boolean;
@@ -29,9 +29,17 @@ interface EditorStore extends ProjectState {
   addCategory: (name: string) => void;
   renameCategory: (key: string, name: string) => void;
   deleteCategory: (key: string) => void;
+  reorderCategory: (fromIndex: number, toIndex: number) => void;
   addField: (categoryKey: string, field: CustomField) => void;
   deleteField: (categoryKey: string, fieldKey: string) => void;
+  reorderField: (categoryKey: string, fromIndex: number, toIndex: number) => void;
+  addMediaSlot: (categoryKey: string, slot: MediaSlot) => void;
+  deleteMediaSlot: (categoryKey: string, slotKey: string) => void;
+  reorderMediaSlot: (categoryKey: string, fromIndex: number, toIndex: number) => void;
   setAssetImage: (assetId: string, file: File) => Promise<void>;
+  setAssetMedia: (assetId: string, slot: MediaSlot, file: File) => Promise<void>;
+  updateAssetMediaSprite: (assetId: string, slotKey: string, sprite: SpriteSheetMeta) => void;
+  deleteAssetMedia: (assetId: string, slotKey: string) => void;
   importProject: (state: ProjectState, mode: 'replace' | 'merge') => Promise<void>;
   undo: () => void;
   redo: () => void;
@@ -168,8 +176,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       updatedAt: now,
     };
     commit(set, (state) => ({ assets: [...state.assets, copy], selectedIds: [copy.id] }));
-    db.images.get(source.id).then((record) => {
-      if (record) db.images.put({ ...record, assetId: copy.id });
+    db.mediaImages.where('assetId').equals(source.id).toArray().then((records) => {
+      records.forEach((record) => db.mediaImages.put({ ...record, id: mediaRecordId(copy.id, record.slotKey), assetId: copy.id }));
     });
   },
   deleteAssets: (ids = get().selectedIds, force = false) => {
@@ -179,7 +187,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       assets: state.assets.filter((asset) => !ids.includes(asset.id)),
       selectedIds: state.selectedIds.filter((id) => !ids.includes(id)),
     }));
-    ids.forEach((id) => db.images.delete(id));
+    ids.forEach((id) => db.mediaImages.where('assetId').equals(id).delete());
     return { blocked: false, references: [] };
   },
   reorderAsset: (id, direction) =>
@@ -210,6 +218,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       categories: state.categories.filter((category) => category.key !== key),
       assets: state.assets.filter((asset) => asset.category !== key),
     })),
+  reorderCategory: (fromIndex, toIndex) =>
+    commit(set, (state) => ({
+      categories: moveArrayItem(state.categories, fromIndex, toIndex),
+    })),
   addField: (categoryKey, field) =>
     commit(set, (state) => ({
       categories: state.categories.map((category) =>
@@ -224,12 +236,89 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           : category,
       ),
     })),
+  reorderField: (categoryKey, fromIndex, toIndex) =>
+    commit(set, (state) => ({
+      categories: state.categories.map((category) =>
+        category.key === categoryKey ? { ...category, fields: moveArrayItem(category.fields, fromIndex, toIndex) } : category,
+      ),
+    })),
+  addMediaSlot: (categoryKey, slot) =>
+    commit(set, (state) => ({
+      categories: state.categories.map((category) =>
+        category.key === categoryKey ? { ...category, mediaSlots: [...(category.mediaSlots ?? []), slot] } : category,
+      ),
+    })),
+  deleteMediaSlot: (categoryKey, slotKey) =>
+    commit(set, (state) => ({
+      categories: state.categories.map((category) =>
+        category.key === categoryKey
+          ? { ...category, mediaSlots: (category.mediaSlots ?? []).filter((slot) => slot.key !== slotKey) }
+          : category,
+      ),
+      assets: state.assets.map((asset) => {
+        if (asset.category !== categoryKey || !asset.media?.[slotKey]) return asset;
+        const { [slotKey]: _removed, ...media } = asset.media;
+        return { ...asset, media, updatedAt: new Date().toISOString() };
+      }),
+    })),
+  reorderMediaSlot: (categoryKey, fromIndex, toIndex) =>
+    commit(set, (state) => ({
+      categories: state.categories.map((category) =>
+        category.key === categoryKey ? { ...category, mediaSlots: moveArrayItem(category.mediaSlots ?? [], fromIndex, toIndex) } : category,
+      ),
+    })),
   setAssetImage: async (assetId, file) => {
     if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) return;
     const meta = await readImageMeta(file);
     const thumbnail = await makeThumbnail(file);
-    await db.images.put({ assetId, fileName: file.name, mimeType: file.type, blob: file, thumbnail });
-    get().updateAsset(assetId, { image: meta });
+    const slot = { key: 'main', label: '대표 이미지', type: 'image' as const };
+    await db.mediaImages.put({ id: mediaRecordId(assetId, slot.key), assetId, slotKey: slot.key, fileName: file.name, mimeType: file.type, blob: file, thumbnail });
+    get().updateAsset(assetId, { image: meta, media: { ...(get().assets.find((asset) => asset.id === assetId)?.media ?? {}), [slot.key]: { ...meta, slotKey: slot.key, slotType: slot.type } } });
+  },
+  setAssetMedia: async (assetId, slot, file) => {
+    if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) return;
+    const meta = await readImageMeta(file);
+    const thumbnail = await makeThumbnail(file);
+    await db.mediaImages.put({ id: mediaRecordId(assetId, slot.key), assetId, slotKey: slot.key, fileName: file.name, mimeType: file.type, blob: file, thumbnail });
+    commit(set, (state) => ({
+      assets: state.assets.map((asset) =>
+        asset.id === assetId
+          ? {
+              ...asset,
+              image: asset.image ?? meta,
+              media: {
+                ...(asset.media ?? {}),
+                [slot.key]: { ...meta, slotKey: slot.key, slotType: slot.type },
+              },
+              updatedAt: new Date().toISOString(),
+            }
+          : asset,
+      ),
+    }));
+  },
+  updateAssetMediaSprite: (assetId, slotKey, sprite) =>
+    commit(set, (state) => ({
+      assets: state.assets.map((asset) =>
+        asset.id === assetId && asset.media?.[slotKey]
+          ? {
+              ...asset,
+              media: { ...asset.media, [slotKey]: { ...asset.media[slotKey], sprite } },
+              updatedAt: new Date().toISOString(),
+            }
+          : asset,
+      ),
+    })),
+  deleteAssetMedia: (assetId, slotKey) => {
+    const asset = get().assets.find((item) => item.id === assetId);
+    if (!asset?.media?.[slotKey]) return;
+    const { [slotKey]: _removed, ...media } = asset.media;
+    const nextImage = slotKey === 'main' ? Object.values(media)[0] : asset.image;
+    commit(set, (state) => ({
+      assets: state.assets.map((item) =>
+        item.id === assetId ? { ...item, image: nextImage, media, updatedAt: new Date().toISOString() } : item,
+      ),
+    }));
+    db.mediaImages.delete(mediaRecordId(assetId, slotKey));
   },
   importProject: async (incoming, mode) => {
     await saveImportBackup(selectState(get()));
@@ -248,7 +337,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
   undo: () => {
     const { undoStack } = get();
-    const previous = undoStack.at(-1);
+    const previous = undoStack[undoStack.length - 1];
     if (!previous) return;
     set((state) => ({
       ...previous,
@@ -260,7 +349,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
   redo: () => {
     const { redoStack } = get();
-    const next = redoStack.at(-1);
+    const next = redoStack[redoStack.length - 1];
     if (!next) return;
     set((state) => ({
       ...next,
@@ -296,6 +385,10 @@ function uniqueCategoryKey(name: string, categories: Category[]) {
 function mergeCategories(existing: Category[], incoming: Category[]) {
   const keys = new Set(existing.map((category) => category.key));
   return [...existing, ...incoming.filter((category) => !keys.has(category.key))];
+}
+
+export function mediaRecordId(assetId: string, slotKey: string) {
+  return `${assetId}::${slotKey}`;
 }
 
 async function readImageMeta(file: File) {

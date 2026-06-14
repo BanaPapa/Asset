@@ -1,4 +1,4 @@
-import type { Asset, Category, CustomField, ExportPayload, ProjectState, ValidationIssue } from './types';
+import type { Asset, AssetMediaMeta, Category, CustomField, ExportPayload, ProjectState, ValidationIssue } from './types';
 
 export function getNested(source: Record<string, unknown>, path: string) {
   return path.split('.').reduce<unknown>((value, key) => {
@@ -25,6 +25,16 @@ export function readableBytes(bytes = 0) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+export function moveArrayItem<T>(items: T[], fromIndex: number, toIndex: number) {
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= items.length || toIndex >= items.length || fromIndex === toIndex) {
+    return [...items];
+  }
+  const next = [...items];
+  const [item] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, item);
+  return next;
+}
+
 export function fileBaseName(fileName: string) {
   return fileName.replace(/\.[^.]+$/, '');
 }
@@ -33,14 +43,34 @@ export function safeId(input: string) {
   return input
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '')
+    .replace(/[^a-z0-9_-]+/g, '_')
     .slice(0, 64);
 }
 
 export function imagePath(asset: Asset) {
   const ext = extensionForMime(asset.image?.mimeType, asset.image?.fileName);
   return asset.image ? `images/${asset.id}${ext}` : null;
+}
+
+export function mediaPath(assetId: string, media: AssetMediaMeta) {
+  const ext = extensionForMime(media.mimeType, media.fileName);
+  return `images/${assetId}/${media.slotKey}${ext}`;
+}
+
+export function assetMediaEntries(asset: Asset) {
+  const media = asset.media ?? {};
+  if (Object.keys(media).length) return Object.entries(media);
+  if (!asset.image) return [];
+  return [
+    [
+      'main',
+      {
+        ...asset.image,
+        slotKey: 'main',
+        slotType: 'image' as const,
+      },
+    ],
+  ] as Array<[string, AssetMediaMeta]>;
 }
 
 export function extensionForMime(mimeType?: string, fileName?: string) {
@@ -70,6 +100,7 @@ export function makeExportPayload(state: ProjectState): ExportPayload {
         tags: asset.tags,
         description: asset.description,
         image: imagePath(asset),
+        media: Object.fromEntries(assetMediaEntries(asset).map(([slotKey, media]) => [slotKey, mediaPath(asset.id, media)])),
         data: asset.data,
       })),
   };
@@ -80,8 +111,8 @@ export function validateProject(state: ProjectState): ValidationIssue[] {
   const ids = new Map<string, number>();
   state.assets.forEach((asset) => ids.set(asset.id, (ids.get(asset.id) ?? 0) + 1));
   state.assets.forEach((asset) => {
-    if (!/^[a-z0-9_]+$/.test(asset.id)) {
-      issues.push({ level: 'error', assetId: asset.id, message: `ID "${asset.id}"는 영문 소문자, 숫자, 언더스코어만 사용할 수 있습니다.` });
+    if (!/^(?=.*[a-z0-9])[a-z0-9_-]+$/.test(asset.id)) {
+      issues.push({ level: 'error', assetId: asset.id, message: `ID "${asset.id}"는 영문 소문자, 숫자, 언더스코어, 하이픈만 사용할 수 있습니다.` });
     }
     if ((ids.get(asset.id) ?? 0) > 1) {
       issues.push({ level: 'error', assetId: asset.id, message: `ID "${asset.id}"가 중복되었습니다.` });
@@ -89,7 +120,7 @@ export function validateProject(state: ProjectState): ValidationIssue[] {
     if (!asset.name.trim()) {
       issues.push({ level: 'error', assetId: asset.id, message: '이름은 필수입니다.' });
     }
-    if (!asset.image) {
+    if (!asset.image && !assetMediaEntries(asset).length) {
       issues.push({ level: 'warning', assetId: asset.id, message: `"${asset.name}"에 이미지가 없습니다.` });
     }
     const fields = state.categories.find((category) => category.key === asset.category)?.fields ?? [];

@@ -23,10 +23,19 @@ export interface CustomField {
   multiple?: boolean;
 }
 
+export type MediaSlotType = 'image' | 'spriteSheet' | 'card';
+
+export interface MediaSlot {
+  key: string;
+  label: string;
+  type: MediaSlotType;
+}
+
 export interface Category {
   key: string;
   name: string;
   fields: CustomField[];
+  mediaSlots?: MediaSlot[];
   collapsed?: boolean;
 }
 
@@ -38,6 +47,20 @@ export interface AssetImageMeta {
   size: number;
 }
 
+export interface SpriteSheetMeta {
+  frameWidth: number;
+  frameHeight: number;
+  columns: number;
+  rows: number;
+  fps: number;
+}
+
+export interface AssetMediaMeta extends AssetImageMeta {
+  slotKey: string;
+  slotType: MediaSlotType;
+  sprite?: SpriteSheetMeta;
+}
+
 export interface Asset {
   id: string;
   name: string;
@@ -46,6 +69,7 @@ export interface Asset {
   tags: string[];
   rarity: Rarity;
   image?: AssetImageMeta;
+  media?: Record<string, AssetMediaMeta>;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -53,7 +77,9 @@ export interface Asset {
 }
 
 export interface AssetImageRecord {
+  id: string;
   assetId: string;
+  slotKey: string;
   fileName: string;
   mimeType: string;
   blob: Blob;
@@ -85,6 +111,7 @@ export interface ExportPayload {
     tags: string[];
     description: string;
     image: string | null;
+    media: Record<string, string>;
     data: Record<string, unknown>;
   }>;
 }

@@ -5,6 +5,7 @@ import {
   Copy,
   Download,
   FileJson,
+  GripVertical,
   ImagePlus,
   Import,
   Moon,
@@ -21,11 +22,13 @@ import JSZip from 'jszip';
 import { db, initialProjectState } from './db';
 import { rarityLabels } from './defaults';
 import { useEditorStore } from './store';
-import type { Asset, CustomField, ProjectState, Rarity } from './types';
+import type { Asset, AssetMediaMeta, CustomField, MediaSlot, MediaSlotType, ProjectState, Rarity } from './types';
 import {
+  assetMediaEntries,
   findIncomingReferences,
   getNested,
   imagePath,
+  mediaPath,
   makeExportPayload,
   readableBytes,
   safeId,
@@ -68,13 +71,13 @@ export function App() {
     return () => window.removeEventListener('paste', onPaste);
   }, [selectedAsset?.id]);
 
-  const requestDelete = () => {
-    const refs = store.selectedIds.flatMap((id) => findIncomingReferences(id, store));
+  const requestDelete = (ids = store.selectedIds) => {
+    const refs = ids.flatMap((id) => findIncomingReferences(id, store));
     if (refs.length) {
       setDeleteWarning(refs);
       return;
     }
-    if (window.confirm('선택한 에셋을 삭제할까요?')) store.deleteAssets(store.selectedIds, true);
+    if (window.confirm('선택한 에셋을 삭제할까요?')) store.deleteAssets(ids, true);
   };
 
   const handleKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -114,7 +117,7 @@ export function App() {
         onImport={importProjectFile}
       />
       <main className="grid min-h-0 flex-1 grid-cols-[360px_minmax(760px,1fr)]">
-        <AssetSidebar onDelete={requestDelete} />
+        <AssetSidebar onDelete={() => requestDelete()} onDeleteAsset={(id) => requestDelete([id])} />
         <AssetDetail asset={selectedAsset} onImageClick={setImageTarget} />
       </main>
       {store.selectedIds.length > 1 && <BatchBar />}
@@ -187,15 +190,27 @@ function SaveIndicator() {
   return <span className="min-w-24 text-xs text-slate-500">{saving ? '저장 중...' : lastSavedAt ? '저장됨 ✓' : '준비됨'}</span>;
 }
 
-function AssetSidebar({ onDelete }: { onDelete: () => void }) {
+function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDeleteAsset: (id: string) => void }) {
   const store = useEditorStore();
   const [newCategory, setNewCategory] = useState(store.categories[0]?.key ?? 'character');
+  const [contextMenu, setContextMenu] = useState<{ assetId: string; x: number; y: number } | null>(null);
   const filtered = useMemo(() => {
     const term = store.search.trim().toLowerCase();
     return [...store.assets]
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .filter((asset) => !term || [asset.name, asset.id, asset.tags.join(' ')].join(' ').toLowerCase().includes(term));
   }, [store.assets, store.search]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, [contextMenu]);
 
   return (
     <aside className="asset-sidebar flex min-h-0 flex-col">
@@ -221,13 +236,35 @@ function AssetSidebar({ onDelete }: { onDelete: () => void }) {
               </button>
               {!category.collapsed && (
                 <div className="space-y-2">
-                  {items.map((asset) => <AssetListItem key={asset.id} asset={asset} />)}
+                  {items.map((asset) => (
+                    <AssetListItem
+                      key={asset.id}
+                      asset={asset}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        store.selectAsset(asset.id);
+                        setContextMenu({ assetId: asset.id, x: event.clientX, y: event.clientY });
+                      }}
+                    />
+                  ))}
                 </div>
               )}
             </section>
           );
         })}
       </div>
+      {contextMenu && (
+        <div className="asset-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button
+            onClick={() => {
+              onDeleteAsset(contextMenu.assetId);
+              setContextMenu(null);
+            }}
+          >
+            <Trash2 className="h-4 w-4" /> 삭제
+          </button>
+        </div>
+      )}
       <div className="asset-sidebar-footer p-3">
         <select className="asset-input mb-2 h-10" value={newCategory} onChange={(event) => setNewCategory(event.target.value)}>
           {store.categories.map((category) => <option key={category.key} value={category.key}>{category.name}</option>)}
@@ -240,7 +277,7 @@ function AssetSidebar({ onDelete }: { onDelete: () => void }) {
   );
 }
 
-function AssetListItem({ asset }: { asset: Asset }) {
+function AssetListItem({ asset, onContextMenu }: { asset: Asset; onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void }) {
   const store = useEditorStore();
   const selected = store.selectedIds.includes(asset.id);
   const category = store.categories.find((item) => item.key === asset.category);
@@ -249,7 +286,9 @@ function AssetListItem({ asset }: { asset: Asset }) {
   useEffect(() => {
     let url = '';
     setThumb(undefined);
-    db.images.get(asset.id).then((record) => {
+    const media = assetMediaEntries(asset)[0];
+    if (!media) return;
+    db.mediaImages.get(`${asset.id}::${media[0]}`).then((record) => {
       if (!record) return;
       url = URL.createObjectURL(record.thumbnail);
       setThumb(url);
@@ -257,12 +296,13 @@ function AssetListItem({ asset }: { asset: Asset }) {
     return () => {
       if (url) URL.revokeObjectURL(url);
     };
-  }, [asset.id, asset.image?.fileName]);
+  }, [asset.id, asset.image?.fileName, asset.media]);
 
   return (
     <button
       className={`asset-list-item ${selected ? 'is-selected' : ''}`}
       onClick={(event) => store.selectAsset(asset.id, event.shiftKey ? 'range' : event.ctrlKey ? 'toggle' : 'single')}
+      onContextMenu={onContextMenu}
     >
       <div className="asset-list-thumb checker">
         {thumb ? <img className="h-full w-full object-contain image-pixelated" src={thumb} alt={asset.name} /> : <span>{String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category))}</span>}
@@ -345,7 +385,9 @@ function AssetHeroImage({ asset }: { asset: Asset }) {
   useEffect(() => {
     let url = '';
     setImageUrl(undefined);
-    db.images.get(asset.id).then((record) => {
+    const media = assetMediaEntries(asset)[0];
+    if (!media) return;
+    db.mediaImages.get(`${asset.id}::${media[0]}`).then((record) => {
       if (!record) return;
       url = URL.createObjectURL(record.blob);
       setImageUrl(url);
@@ -353,7 +395,7 @@ function AssetHeroImage({ asset }: { asset: Asset }) {
     return () => {
       if (url) URL.revokeObjectURL(url);
     };
-  }, [asset.id, asset.image?.fileName]);
+  }, [asset.id, asset.image?.fileName, asset.media]);
 
   if (imageUrl) return <img className="h-full w-full object-contain image-pixelated" src={imageUrl} alt={asset.name} />;
   return <span>{String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category))}</span>;
@@ -432,13 +474,21 @@ function SchemaTab({ asset }: { asset: Asset }) {
 function RefsTab({ asset }: { asset: Asset }) {
   const store = useEditorStore();
   const incomingRefs = findIncomingReferences(asset.id, store);
-  const imageInfo = asset.image ? `${asset.image.fileName} · ${asset.image.width}x${asset.image.height} · ${readableBytes(asset.image.size)}` : '이미지 없음';
+  const mediaItems = assetMediaEntries(asset);
   return (
     <Panel title="참조와 파일">
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div className="asset-muted-box">
-          <strong>이미지 정보</strong>
-          <p>{imageInfo}</p>
+          <strong>미디어 정보</strong>
+          {mediaItems.length ? (
+            <div className="mt-2 space-y-1">
+              {mediaItems.map(([slotKey, media]) => (
+                <p key={slotKey}>{slotKey}: {media.fileName} · {media.width}x{media.height} · {readableBytes(media.size)}</p>
+              ))}
+            </div>
+          ) : (
+            <p>이미지 없음</p>
+          )}
         </div>
         <div className="asset-muted-box">
           <strong>이 에셋을 참조하는 항목</strong>
@@ -505,11 +555,17 @@ function ImageModal({ asset, onClose }: { asset: Asset; onClose: () => void }) {
   const store = useEditorStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string>();
+  const slots = mediaSlotsForAsset(asset, store);
+  const [activeSlotKey, setActiveSlotKey] = useState(slots[0]?.key ?? 'main');
+  const activeSlot = slots.find((slot) => slot.key === activeSlotKey) ?? slots[0];
+  const activeMedia = activeSlot ? asset.media?.[activeSlot.key] : undefined;
   const emoji = String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category));
 
   useEffect(() => {
     let url = '';
-    db.images.get(asset.id).then((record) => {
+    if (!activeSlot) return undefined;
+    setPreviewUrl(undefined);
+    db.mediaImages.get(`${asset.id}::${activeSlot.key}`).then((record) => {
       if (!record) return;
       url = URL.createObjectURL(record.blob);
       setPreviewUrl(url);
@@ -517,17 +573,32 @@ function ImageModal({ asset, onClose }: { asset: Asset; onClose: () => void }) {
     return () => {
       if (url) URL.revokeObjectURL(url);
     };
-  }, [asset.id, asset.image?.fileName]);
+  }, [asset.id, activeSlot?.key, activeMedia?.fileName]);
 
   const upload = async (files: FileList | File[]) => {
     const file = Array.from(files).find((item) => item.type.startsWith('image/'));
-    if (!file) return;
-    await store.setAssetImage(asset.id, file);
+    if (!file || !activeSlot) return;
+    await store.setAssetMedia(asset.id, activeSlot, file);
   };
 
   return (
-    <Modal title="이미지 / 임시 이모지" onClose={onClose}>
-      <div className="grid grid-cols-[280px_1fr] gap-5">
+    <Modal title="미디어 / 임시 이모지" onClose={onClose}>
+      <div className="grid grid-cols-[220px_280px_1fr] gap-5">
+        <div className="space-y-2">
+          {slots.map((slot) => {
+            const media = asset.media?.[slot.key];
+            return (
+              <button
+                key={slot.key}
+                className={`asset-media-slot ${activeSlot?.key === slot.key ? 'is-active' : ''}`}
+                onClick={() => setActiveSlotKey(slot.key)}
+              >
+                <strong>{slot.label}</strong>
+                <span>{slot.type}{media ? ` · ${media.fileName}` : ''}</span>
+              </button>
+            );
+          })}
+        </div>
         <div
           className="asset-modal-preview checker"
           onDrop={(event) => {
@@ -540,13 +611,45 @@ function ImageModal({ asset, onClose }: { asset: Asset; onClose: () => void }) {
         </div>
         <div className="space-y-5">
           <section>
-            <h3 className="text-sm font-bold text-slate-100">이미지 삽입</h3>
-            <p className="mt-1 text-sm text-slate-500">파일을 드롭하거나 선택하세요. 개발 중에는 이모지만 사용해도 됩니다.</p>
+            <h3 className="text-sm font-bold text-slate-100">{activeSlot?.label ?? '미디어'} 삽입</h3>
+            <p className="mt-1 text-sm text-slate-500">파일을 드롭하거나 선택하세요. 스프라이트 시트와 카드 이미지는 슬롯별로 따로 저장됩니다.</p>
             <input ref={inputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => event.target.files && upload(event.target.files)} />
             <button className="asset-primary-btn mt-3 h-10 px-4" onClick={() => inputRef.current?.click()}>
               <Upload className="h-4 w-4" /> 파일 선택
             </button>
+            {activeSlot && activeMedia && (
+              <button className="ml-2 rounded border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" onClick={() => store.deleteAssetMedia(asset.id, activeSlot.key)}>
+                삭제
+              </button>
+            )}
           </section>
+          {activeSlot?.type === 'spriteSheet' && activeMedia && (
+            <section>
+              <h3 className="text-sm font-bold text-slate-100">스프라이트 시트</h3>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {(['frameWidth', 'frameHeight', 'columns', 'rows', 'fps'] as const).map((key) => (
+                  <FieldLabel key={key} label={spriteLabel(key)}>
+                    <input
+                      className="asset-input"
+                      type="number"
+                      min={1}
+                      value={activeMedia.sprite?.[key] ?? (key === 'fps' ? 12 : 1)}
+                      onChange={(event) =>
+                        store.updateAssetMediaSprite(asset.id, activeSlot.key, {
+                          frameWidth: activeMedia.sprite?.frameWidth ?? 1,
+                          frameHeight: activeMedia.sprite?.frameHeight ?? 1,
+                          columns: activeMedia.sprite?.columns ?? 1,
+                          rows: activeMedia.sprite?.rows ?? 1,
+                          fps: activeMedia.sprite?.fps ?? 12,
+                          [key]: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </FieldLabel>
+                ))}
+              </div>
+            </section>
+          )}
           <section>
             <h3 className="text-sm font-bold text-slate-100">임시 이모지</h3>
             <div className="mt-2 grid grid-cols-8 gap-2">
@@ -561,7 +664,7 @@ function ImageModal({ asset, onClose }: { asset: Asset; onClose: () => void }) {
               ))}
             </div>
           </section>
-          {asset.image && <p className="asset-muted-box text-xs">{asset.image.fileName} · {asset.image.width}x{asset.image.height} · {readableBytes(asset.image.size)}</p>}
+          {activeMedia && <p className="asset-muted-box text-xs">{activeMedia.fileName} · {activeMedia.width}x{activeMedia.height} · {readableBytes(activeMedia.size)}</p>}
         </div>
       </div>
     </Modal>
@@ -596,14 +699,54 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const store = useEditorStore();
   const [categoryNameValue, setCategoryNameValue] = useState('');
   const [fieldDraft, setFieldDraft] = useState({ category: store.categories[0]?.key ?? '', label: '', type: 'text', options: '' });
+  const [mediaSlotDraft, setMediaSlotDraft] = useState({ label: '', type: 'image' as MediaSlotType });
+  const selectedFieldCategory = store.categories.find((category) => category.key === fieldDraft.category) ?? store.categories[0];
+
+  useEffect(() => {
+    if (!store.categories.some((category) => category.key === fieldDraft.category)) {
+      setFieldDraft((draft) => ({ ...draft, category: store.categories[0]?.key ?? '' }));
+    }
+  }, [fieldDraft.category, store.categories]);
+
+  const startDrag = (event: React.DragEvent, kind: 'category' | 'field' | 'mediaSlot', index: number) => {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-asset-editor-drag', JSON.stringify({ kind, index }));
+  };
+
+  const dropCategory = (event: React.DragEvent, toIndex: number) => {
+    event.preventDefault();
+    const payload = readDragPayload(event);
+    if (payload?.kind === 'category') store.reorderCategory(payload.index, toIndex);
+  };
+
+  const dropField = (event: React.DragEvent, toIndex: number) => {
+    event.preventDefault();
+    const payload = readDragPayload(event);
+    if (selectedFieldCategory && payload?.kind === 'field') store.reorderField(selectedFieldCategory.key, payload.index, toIndex);
+  };
+
+  const dropMediaSlot = (event: React.DragEvent, toIndex: number) => {
+    event.preventDefault();
+    const payload = readDragPayload(event);
+    if (selectedFieldCategory && payload?.kind === 'mediaSlot') store.reorderMediaSlot(selectedFieldCategory.key, payload.index, toIndex);
+  };
+
   return (
     <Modal title="설정" onClose={onClose}>
       <div className="grid grid-cols-2 gap-5">
         <section>
           <h3 className="mb-2 text-sm font-bold">카테고리</h3>
           <div className="space-y-2">
-            {store.categories.map((category) => (
-              <div key={category.key} className="flex gap-2">
+            {store.categories.map((category, index) => (
+              <div
+                key={category.key}
+                className="asset-draggable-row flex gap-2"
+                draggable
+                onDragStart={(event) => startDrag(event, 'category', index)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => dropCategory(event, index)}
+              >
+                <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
                 <input className="asset-input" value={category.name} onChange={(event) => store.renameCategory(category.key, event.target.value)} />
                 <IconButton label="삭제" onClick={() => window.confirm('이 카테고리와 포함 에셋을 삭제할까요?') && store.deleteCategory(category.key)}><Trash2 /></IconButton>
               </div>
@@ -620,6 +763,66 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
             <select className="asset-input" value={fieldDraft.category} onChange={(event) => setFieldDraft({ ...fieldDraft, category: event.target.value })}>
               {store.categories.map((category) => <option key={category.key} value={category.key}>{category.name}</option>)}
             </select>
+            <div className="space-y-2">
+              {selectedFieldCategory?.fields.length ? (
+                selectedFieldCategory.fields.map((field, index) => (
+                  <div
+                    key={field.key}
+                    className="asset-draggable-row flex gap-2"
+                    draggable
+                    onDragStart={(event) => startDrag(event, 'field', index)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => dropField(event, index)}
+                  >
+                    <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
+                    <div className="asset-field-row-summary">
+                      <strong>{field.label}</strong>
+                      <span>{field.key} · {field.type}</span>
+                    </div>
+                    <IconButton label="필드 삭제" onClick={() => store.deleteField(selectedFieldCategory.key, field.key)}><Trash2 /></IconButton>
+                  </div>
+                ))
+              ) : (
+                <div className="asset-muted-box text-sm">이 카테고리에는 커스텀 필드가 없습니다.</div>
+              )}
+            </div>
+            <div className="asset-muted-box space-y-2 text-sm">
+              <strong className="block text-slate-200">미디어 슬롯</strong>
+              {(selectedFieldCategory?.mediaSlots ?? []).map((slot, index) => (
+                <div
+                  key={slot.key}
+                  className="asset-draggable-row flex gap-2"
+                  draggable
+                  onDragStart={(event) => startDrag(event, 'mediaSlot', index)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => dropMediaSlot(event, index)}
+                >
+                  <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
+                  <div className="asset-field-row-summary">
+                    <strong>{slot.label}</strong>
+                    <span>{slot.key} · {slot.type}</span>
+                  </div>
+                  <IconButton label="미디어 슬롯 삭제" onClick={() => selectedFieldCategory && store.deleteMediaSlot(selectedFieldCategory.key, slot.key)}><Trash2 /></IconButton>
+                </div>
+              ))}
+              <div className="grid grid-cols-[1fr_130px_auto] gap-2">
+                <input className="asset-input" placeholder="슬롯 이름" value={mediaSlotDraft.label} onChange={(event) => setMediaSlotDraft({ ...mediaSlotDraft, label: event.target.value })} />
+                <select className="asset-input" value={mediaSlotDraft.type} onChange={(event) => setMediaSlotDraft({ ...mediaSlotDraft, type: event.target.value as MediaSlotType })}>
+                  <option value="image">이미지</option>
+                  <option value="spriteSheet">스프라이트 시트</option>
+                  <option value="card">카드</option>
+                </select>
+                <button className="asset-primary-btn px-3" onClick={() => {
+                  if (!selectedFieldCategory || !mediaSlotDraft.label.trim()) return;
+                  store.addMediaSlot(selectedFieldCategory.key, {
+                    key: safeId(mediaSlotDraft.label) || `media_${Date.now()}`,
+                    label: mediaSlotDraft.label.trim(),
+                    type: mediaSlotDraft.type,
+                  });
+                  setMediaSlotDraft({ ...mediaSlotDraft, label: '' });
+                }}>추가</button>
+              </div>
+            </div>
             <input className="asset-input" placeholder="필드 이름" value={fieldDraft.label} onChange={(event) => setFieldDraft({ ...fieldDraft, label: event.target.value })} />
             <select className="asset-input" value={fieldDraft.type} onChange={(event) => setFieldDraft({ ...fieldDraft, type: event.target.value })}>
               <option value="text">텍스트</option>
@@ -697,9 +900,10 @@ async function exportProject(mode: 'zip' | 'json' | 'split') {
     zip.file('assets.json', JSON.stringify(payload, null, 2));
   }
   for (const asset of state.assets) {
-    const record = await db.images.get(asset.id);
-    const path = imagePath(asset);
-    if (record && path) zip.file(path, record.blob);
+    for (const [slotKey, media] of assetMediaEntries(asset)) {
+      const record = await db.mediaImages.get(`${asset.id}::${slotKey}`);
+      if (record) zip.file(mediaPath(asset.id, media), record.blob);
+    }
   }
   downloadBlob(await zip.generateAsync({ type: 'blob' }), `${state.projectName || 'assets'}.zip`);
 }
@@ -713,11 +917,11 @@ async function importProjectFile(file: File) {
     const state = payloadToState(JSON.parse(await jsonFile.async('text')));
     await store.importProject(state, window.confirm('현재 데이터를 가져온 데이터로 교체할까요? 취소하면 병합합니다.') ? 'replace' : 'merge');
     for (const asset of state.assets) {
-      const path = imagePath(asset);
-      const entry = path ? zip.file(path) : null;
-      if (entry && asset.image) {
+      for (const [slotKey, media] of assetMediaEntries(asset)) {
+        const entry = zip.file(mediaPath(asset.id, media)) ?? (slotKey === 'main' && asset.image ? zip.file(imagePath(asset) ?? '') : null);
+        if (!entry) continue;
         const blob = await entry.async('blob');
-        await db.images.put({ assetId: asset.id, fileName: asset.image.fileName, mimeType: asset.image.mimeType, blob, thumbnail: blob });
+        await db.mediaImages.put({ id: `${asset.id}::${slotKey}`, assetId: asset.id, slotKey, fileName: media.fileName, mimeType: media.mimeType, blob, thumbnail: blob });
       }
     }
     return;
@@ -732,20 +936,42 @@ function payloadToState(payload: any): ProjectState {
     ...initialProjectState,
     projectName: payload.meta?.projectName ?? 'imported-game',
     categories: payload.categories ?? initialProjectState.categories,
-    assets: (payload.assets ?? []).map((asset: any, index: number) => ({
-      id: asset.id,
-      name: asset.name,
-      category: asset.category,
-      description: asset.description ?? '',
-      tags: asset.tags ?? [],
-      rarity: asset.rarity ?? 'common',
-      sortOrder: index,
-      createdAt: now,
-      updatedAt: now,
-      data: asset.data ?? {},
-      image: asset.image ? { fileName: asset.image.split('/').pop(), mimeType: 'image/png', width: 0, height: 0, size: 0 } : undefined,
-    })),
+    assets: (payload.assets ?? []).map((asset: any, index: number) => {
+      const media = mediaFromPayload(asset);
+      return {
+        id: asset.id,
+        name: asset.name,
+        category: asset.category,
+        description: asset.description ?? '',
+        tags: asset.tags ?? [],
+        rarity: asset.rarity ?? 'common',
+        sortOrder: index,
+        createdAt: now,
+        updatedAt: now,
+        data: asset.data ?? {},
+        image: Object.values(media)[0],
+        media,
+      };
+    }),
   };
+}
+
+function mediaFromPayload(asset: any): Record<string, AssetMediaMeta> {
+  const entries = Object.entries<string>(asset.media ?? (asset.image ? { main: asset.image } : {}));
+  return Object.fromEntries(
+    entries.map(([slotKey, path]) => [
+      slotKey,
+      {
+        slotKey,
+        slotType: slotKey.includes('sprite') ? 'spriteSheet' : slotKey.includes('card') ? 'card' : 'image',
+        fileName: path.split('/').pop() ?? `${slotKey}.png`,
+        mimeType: 'image/png',
+        width: 0,
+        height: 0,
+        size: 0,
+      },
+    ]),
+  );
 }
 
 function downloadBlob(blob: Blob, fileName: string) {
@@ -771,6 +997,22 @@ function defaultEmoji(category: string) {
     ui_icon: '⭐',
   };
   return map[category] ?? '🎒';
+}
+
+function mediaSlotsForAsset(asset: Asset, state: ProjectState): MediaSlot[] {
+  const category = state.categories.find((item) => item.key === asset.category);
+  return category?.mediaSlots?.length ? category.mediaSlots : [{ key: 'main', label: '대표 이미지', type: 'image' }];
+}
+
+function spriteLabel(key: 'frameWidth' | 'frameHeight' | 'columns' | 'rows' | 'fps') {
+  const labels = {
+    frameWidth: '프레임 너비',
+    frameHeight: '프레임 높이',
+    columns: '열',
+    rows: '행',
+    fps: 'FPS',
+  };
+  return labels[key];
 }
 
 function SectionTitle({ title }: { title: string }) {
@@ -800,6 +1042,18 @@ function FieldLabel({ label, children }: { label: string; children: React.ReactN
   return <label className="block space-y-1 text-sm"><span className="font-bold text-slate-400">{label}</span>{children}</label>;
 }
 
+function readDragPayload(event: React.DragEvent) {
+  try {
+    const payload = JSON.parse(event.dataTransfer.getData('application/x-asset-editor-drag')) as { kind?: unknown; index?: unknown };
+    if ((payload.kind === 'category' || payload.kind === 'field' || payload.kind === 'mediaSlot') && Number.isInteger(payload.index)) {
+      return payload as { kind: 'category' | 'field' | 'mediaSlot'; index: number };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) {
   return <button title={label} aria-label={label} className="asset-icon-btn" onClick={onClick}>{children}</button>;
 }
@@ -807,7 +1061,7 @@ function IconButton({ label, children, onClick }: { label: string; children: Rea
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 z-30 grid place-items-center bg-black/70 p-6">
-      <div className="asset-modal max-h-[88vh] w-full max-w-3xl overflow-auto">
+      <div className="asset-modal max-h-[88vh] w-full max-w-5xl overflow-auto">
         <div className="flex h-12 items-center justify-between border-b border-slate-800 px-4">
           <strong>{title}</strong>
           <button className="rounded px-2 py-1 text-sm hover:bg-slate-800" onClick={onClose}>닫기</button>
