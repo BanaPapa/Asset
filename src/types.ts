@@ -29,6 +29,7 @@ export interface MediaSlot {
   key: string;
   label: string;
   type: MediaSlotType;
+  sizeHint?: string;
 }
 
 export interface Category {
@@ -37,6 +38,7 @@ export interface Category {
   fields: CustomField[];
   mediaSlots?: MediaSlot[];
   collapsed?: boolean;
+  group?: string;
 }
 
 export interface AssetImageMeta {
@@ -86,6 +88,13 @@ export interface AssetImageRecord {
   thumbnail: Blob;
 }
 
+export interface WeaponSettings {
+  tierMax: number;
+  rangeMax: number;
+  apCostMax: number;
+  rarityOptions: Rarity[];
+}
+
 export interface ProjectState {
   projectName: string;
   categories: Category[];
@@ -94,6 +103,7 @@ export interface ProjectState {
   theme: 'system' | 'light' | 'dark';
   viewMode: 'list' | 'grid';
   search: string;
+  weaponSettings: WeaponSettings;
 }
 
 export interface ExportPayload {

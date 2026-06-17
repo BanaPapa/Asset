@@ -16,7 +16,6 @@ import {
   Sun,
   Trash2,
   Undo2,
-  Upload,
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { db, initialProjectState } from './db';
@@ -50,7 +49,7 @@ export function App() {
   const selectedAsset = store.assets.find((asset) => asset.id === store.selectedIds[0]) ?? store.assets[0];
   const [showSettings, setShowSettings] = useState(false);
   const [showExport, setShowExport] = useState(false);
-  const [imageTarget, setImageTarget] = useState<Asset | null>(null);
+  const [imageTarget, setImageTarget] = useState<string | null>(null);
   const [deleteWarning, setDeleteWarning] = useState<Asset[] | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -123,7 +122,7 @@ export function App() {
       {store.selectedIds.length > 1 && <BatchBar />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showExport && <ExportModal onClose={() => setShowExport(false)} />}
-      {imageTarget && <ImageModal asset={imageTarget} onClose={() => setImageTarget(null)} />}
+      {imageTarget && <ImageModal assetId={imageTarget} onClose={() => setImageTarget(null)} />}
       {deleteWarning && (
         <ConfirmModal
           title="참조 중인 에셋입니다"
@@ -190,16 +189,43 @@ function SaveIndicator() {
   return <span className="min-w-24 text-xs text-slate-500">{saving ? '저장 중...' : lastSavedAt ? '저장됨 ✓' : '준비됨'}</span>;
 }
 
+const GROUP_ORDER = ['세계', '함대', '개발/능력', '경제', '콘텐츠'];
+
 function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDeleteAsset: (id: string) => void }) {
   const store = useEditorStore();
   const [newCategory, setNewCategory] = useState(store.categories[0]?.key ?? 'character');
   const [contextMenu, setContextMenu] = useState<{ assetId: string; x: number; y: number } | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
   const filtered = useMemo(() => {
     const term = store.search.trim().toLowerCase();
     return [...store.assets]
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .filter((asset) => !term || [asset.name, asset.id, asset.tags.join(' ')].join(' ').toLowerCase().includes(term));
   }, [store.assets, store.search]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, typeof store.categories>();
+    for (const cat of store.categories) {
+      const g = cat.group ?? '기타';
+      if (!map.has(g)) map.set(g, []);
+      map.get(g)!.push(cat);
+    }
+    const order = [...GROUP_ORDER, '기타'];
+    return [...map.entries()].sort(([a], [b]) => {
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+  }, [store.categories]);
+
+  const toggleGroup = (group: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      next.has(group) ? next.delete(group) : next.add(group);
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -224,32 +250,51 @@ function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDel
           <IconButton label="삭제" onClick={onDelete}><Trash2 /></IconButton>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-        {store.categories.map((category) => {
-          const items = filtered.filter((asset) => asset.category === category.key);
+      <div className="min-h-0 flex-1 overflow-auto px-2 pb-3">
+        {grouped.map(([groupName, categories]) => {
+          const groupCollapsed = collapsedGroups.has(groupName);
+          const groupTotal = categories.reduce((n, cat) => n + filtered.filter((a) => a.category === cat.key).length, 0);
           return (
-            <section key={category.key} className="mb-3">
-              <button className="asset-category-title" onClick={() => store.toggleCategory(category.key)}>
-                {category.collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                <span>{category.name}</span>
-                <span className="ml-auto">{items.length}</span>
+            <div key={groupName} className="mb-1">
+              {/* 그룹 헤더 */}
+              <button className="asset-group-header" onClick={() => toggleGroup(groupName)}>
+                {groupCollapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+                <span className="flex-1 text-left">{groupName}</span>
+                <span className="asset-group-count">{groupTotal}</span>
               </button>
-              {!category.collapsed && (
-                <div className="space-y-2">
-                  {items.map((asset) => (
-                    <AssetListItem
-                      key={asset.id}
-                      asset={asset}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        store.selectAsset(asset.id);
-                        setContextMenu({ assetId: asset.id, x: event.clientX, y: event.clientY });
-                      }}
-                    />
-                  ))}
+              {/* 그룹 내 카테고리 목록 */}
+              {!groupCollapsed && (
+                <div className="asset-group-body">
+                  {categories.map((category) => {
+                    const items = filtered.filter((asset) => asset.category === category.key);
+                    return (
+                      <section key={category.key} className="mb-1">
+                        <button className="asset-category-title" onClick={() => store.toggleCategory(category.key)}>
+                          {category.collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                          <span>{category.name}</span>
+                          <span className="ml-auto">{items.length}</span>
+                        </button>
+                        {!category.collapsed && (
+                          <div className="space-y-1 pl-2">
+                            {items.map((asset) => (
+                              <AssetListItem
+                                key={asset.id}
+                                asset={asset}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  store.selectAsset(asset.id);
+                                  setContextMenu({ assetId: asset.id, x: event.clientX, y: event.clientY });
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })}
                 </div>
               )}
-            </section>
+            </div>
           );
         })}
       </div>
@@ -305,7 +350,7 @@ function AssetListItem({ asset, onContextMenu }: { asset: Asset; onContextMenu: 
       onContextMenu={onContextMenu}
     >
       <div className="asset-list-thumb checker">
-        {thumb ? <img className="h-full w-full object-contain image-pixelated" src={thumb} alt={asset.name} /> : <span>{String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category))}</span>}
+        {thumb ? <img className="h-full w-full object-contain" src={thumb} alt={asset.name} /> : <span>{String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category))}</span>}
       </div>
       <div className="min-w-0 flex-1 text-left">
         <div className="truncate text-sm font-bold text-slate-100">{asset.name}</div>
@@ -315,7 +360,7 @@ function AssetListItem({ asset, onContextMenu }: { asset: Asset; onContextMenu: 
   );
 }
 
-function AssetDetail({ asset, onImageClick }: { asset?: Asset; onImageClick: (asset: Asset) => void }) {
+function AssetDetail({ asset, onImageClick }: { asset?: Asset; onImageClick: (assetId: string) => void }) {
   const store = useEditorStore();
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
 
@@ -331,14 +376,48 @@ function AssetDetail({ asset, onImageClick }: { asset?: Asset; onImageClick: (as
     );
   }
 
+  const slots = mediaSlotsForAsset(asset, store);
+  const savedPrimaryKey = String(getNested(asset.data, '__primarySlotKey') ?? '');
+  const primarySlotKey = slots.find((s) => s.key === savedPrimaryKey)?.key ?? slots[0]?.key ?? 'main';
+  const setPrimarySlot = (key: string) => store.updateAssetData(asset.id, '__primarySlotKey', key);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; slotKey: string } | null>(null);
+
   return (
-    <section className="asset-workspace min-h-0 overflow-auto">
-      <div className="asset-hero">
-        <button className="asset-hero-image checker" onClick={() => onImageClick(asset)} title="이미지 또는 임시 이모지 설정">
-          <AssetHeroImage asset={asset} />
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="mb-2 flex items-center gap-2">
+    <section className="asset-workspace flex min-h-0 flex-1 flex-col" onClick={() => setCtxMenu(null)}>
+      {/* Top 30%: image slots in a horizontal row */}
+      <div className="asset-top-panel shrink-0">
+        {slots.map((slot) => {
+          const ratio = parseAspectRatio(slot.sizeHint) ?? 1;
+          const hasImage = !!asset.media?.[slot.key];
+          return (
+            <button
+              key={slot.key}
+              className={`asset-panel-slot checker ${slot.key === primarySlotKey ? 'is-active' : ''}`}
+              style={{ aspectRatio: ratio }}
+              onClick={() => (slot.key === primarySlotKey ? onImageClick(asset.id) : setPrimarySlot(slot.key))}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (hasImage) setCtxMenu({ x: e.clientX, y: e.clientY, slotKey: slot.key });
+              }}
+              title={slot.label}
+            >
+              <AssetSlotThumb asset={asset} slotKey={slot.key} label={slot.label} useBlob />
+            </button>
+          );
+        })}
+      </div>
+      {ctxMenu && (
+        <div className="asset-ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <button className="asset-ctx-item" onClick={() => { store.deleteAssetMedia(asset.id, ctxMenu.slotKey); setCtxMenu(null); }}>
+            이미지 삭제
+          </button>
+        </div>
+      )}
+      {/* Bottom 70%: info + tabs + fields */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="asset-info-header shrink-0">
+          <div className="mb-1.5 flex items-center gap-2">
             <span className="asset-kicker">{categoryName(asset.category, store)}</span>
             <span className="asset-pill">{rarityLabels[asset.rarity]}</span>
             <span className="asset-pill muted">{asset.id}</span>
@@ -355,59 +434,43 @@ function AssetDetail({ asset, onImageClick }: { asset?: Asset; onImageClick: (as
             onChange={(event) => store.updateAsset(asset.id, { description: event.target.value })}
             placeholder="에셋 설명, 콘셉트, 사용처를 적어두세요."
           />
-          <div className="asset-stat-row">
-            <Metric label="이미지" value={asset.image ? `${asset.image.width}x${asset.image.height}` : '임시'} />
-            <Metric label="태그" value={asset.tags.length ? `${asset.tags.length}개` : '없음'} />
-            <Metric label="참조됨" value={`${findIncomingReferences(asset.id, store).length}개`} />
-          </div>
         </div>
-      </div>
-      <div className="asset-tabs">
-        {(Object.keys(tabLabels) as DetailTab[]).map((tab) => (
-          <button key={tab} className={activeTab === tab ? 'is-active' : ''} onClick={() => setActiveTab(tab)}>
-            {tabLabels[tab]}
-          </button>
-        ))}
-      </div>
-      <div className="asset-detail-body">
-        {activeTab === 'overview' && <OverviewTab asset={asset} />}
-        {activeTab === 'basic' && <BasicTab asset={asset} />}
-        {activeTab === 'schema' && <SchemaTab asset={asset} />}
-        {activeTab === 'refs' && <RefsTab asset={asset} />}
-        {activeTab === 'json' && <JsonTab asset={asset} />}
+        <div className="asset-tabs shrink-0">
+          {(Object.keys(tabLabels) as DetailTab[]).map((tab) => (
+            <button key={tab} className={activeTab === tab ? 'is-active' : ''} onClick={() => setActiveTab(tab)}>
+              {tabLabels[tab]}
+            </button>
+          ))}
+        </div>
+        <div className="asset-detail-body min-h-0 flex-1 overflow-y-auto">
+          {activeTab === 'overview' && <OverviewTab asset={asset} />}
+          {activeTab === 'basic' && <BasicTab asset={asset} />}
+          {activeTab === 'schema' && <SchemaTab asset={asset} />}
+          {activeTab === 'refs' && <RefsTab asset={asset} />}
+          {activeTab === 'json' && <JsonTab asset={asset} />}
+        </div>
       </div>
     </section>
   );
 }
 
-function AssetHeroImage({ asset }: { asset: Asset }) {
-  const [imageUrl, setImageUrl] = useState<string>();
+function AssetSlotThumb({ asset, slotKey, label, useBlob }: { asset: Asset; slotKey: string; label?: string; useBlob?: boolean }) {
+  const [imgUrl, setImgUrl] = useState<string>();
   useEffect(() => {
     let url = '';
-    setImageUrl(undefined);
-    const media = assetMediaEntries(asset)[0];
-    if (!media) return;
-    db.mediaImages.get(`${asset.id}::${media[0]}`).then((record) => {
+    setImgUrl(undefined);
+    db.mediaImages.get(`${asset.id}::${slotKey}`).then((record) => {
       if (!record) return;
-      url = URL.createObjectURL(record.blob);
-      setImageUrl(url);
+      url = URL.createObjectURL(useBlob ? record.blob : record.thumbnail);
+      setImgUrl(url);
     });
     return () => {
       if (url) URL.revokeObjectURL(url);
     };
-  }, [asset.id, asset.image?.fileName, asset.media]);
+  }, [asset.id, slotKey, useBlob, asset.media?.[slotKey]?.fileName]);
 
-  if (imageUrl) return <img className="h-full w-full object-contain image-pixelated" src={imageUrl} alt={asset.name} />;
-  return <span>{String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category))}</span>;
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="asset-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
+  if (imgUrl) return <img className="h-full w-full object-cover" src={imgUrl} />;
+  return <span className="text-xs font-semibold text-slate-600">{label ?? slotKey.slice(0, 3).toUpperCase()}</span>;
 }
 
 function OverviewTab({ asset }: { asset: Asset }) {
@@ -424,6 +487,10 @@ function OverviewTab({ asset }: { asset: Asset }) {
 function BasicTab({ asset, compact = false }: { asset: Asset; compact?: boolean }) {
   const store = useEditorStore();
   const issues = validateProject(store).filter((issue) => issue.assetId === asset.id);
+  const isWeapon = asset.category === 'weapon';
+  const availableRarities = (Object.keys(rarityLabels) as Rarity[]).filter(
+    (r) => !isWeapon || store.weaponSettings.rarityOptions.includes(r),
+  );
   return (
     <Panel title="기본 정보">
       <div className="asset-form-grid">
@@ -435,7 +502,7 @@ function BasicTab({ asset, compact = false }: { asset: Asset; compact?: boolean 
         </FieldLabel>
         <FieldLabel label="희귀도">
           <select className="asset-input" value={asset.rarity} onChange={(event) => store.updateAsset(asset.id, { rarity: event.target.value as Rarity })}>
-            {(Object.keys(rarityLabels) as Rarity[]).map((rarity) => <option key={rarity} value={rarity}>{rarityLabels[rarity]}</option>)}
+            {availableRarities.map((rarity) => <option key={rarity} value={rarity}>{rarityLabels[rarity]}</option>)}
           </select>
         </FieldLabel>
         <TextField label="태그" value={asset.tags.join(', ')} onChange={(value) => store.updateAsset(asset.id, { tags: value.split(',').map((tag) => tag.trim()).filter(Boolean) })} />
@@ -514,6 +581,40 @@ function SchemaField({ asset, field }: { asset: Asset; field: CustomField }) {
   const setValue = (next: unknown) => store.updateAssetData(asset.id, field.key, next);
   const refs = store.assets.filter((item) => !field.refCategory || item.category === field.refCategory);
 
+  // Weapon-specific field overrides
+  if (asset.category === 'weapon') {
+    const ws = store.weaponSettings;
+    if (field.key === 'tier') {
+      return (
+        <FieldLabel label={field.label}>
+          <select className="asset-input" value={String(Number(value ?? 1))} onChange={(e) => setValue(Number(e.target.value))}>
+            {Array.from({ length: ws.tierMax }, (_, i) => i + 1).map((n) => (
+              <option key={n} value={n}>{n}단계</option>
+            ))}
+          </select>
+        </FieldLabel>
+      );
+    }
+    if (field.key === 'range') {
+      const max = ws.rangeMax;
+      return (
+        <FieldLabel label={field.label}>
+          <input type="range" className="asset-input" min={0} max={max} value={Number(value ?? 0)} onChange={(e) => setValue(Number(e.target.value))} />
+          <span className="text-xs text-slate-500">{String(value ?? 0)} / {max}</span>
+        </FieldLabel>
+      );
+    }
+    if (field.key === 'apCost') {
+      const max = ws.apCostMax;
+      return (
+        <FieldLabel label={field.label}>
+          <input type="range" className="asset-input" min={0} max={max} value={Number(value ?? 0)} onChange={(e) => setValue(Number(e.target.value))} />
+          <span className="text-xs text-slate-500">{String(value ?? 0)} / {max}</span>
+        </FieldLabel>
+      );
+    }
+  }
+
   if (field.type === 'boolean') {
     return <FieldLabel label={field.label}><input type="checkbox" checked={Boolean(value)} onChange={(event) => setValue(event.target.checked)} /></FieldLabel>;
   }
@@ -551,15 +652,18 @@ function SchemaField({ asset, field }: { asset: Asset; field: CustomField }) {
   return <TextField label={field.label} value={String(value ?? '')} onChange={setValue} />;
 }
 
-function ImageModal({ asset, onClose }: { asset: Asset; onClose: () => void }) {
+function ImageModal({ assetId, onClose }: { assetId: string; onClose: () => void }) {
   const store = useEditorStore();
+  const asset = store.assets.find((a) => a.id === assetId);
   const inputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string>();
-  const slots = mediaSlotsForAsset(asset, store);
-  const [activeSlotKey, setActiveSlotKey] = useState(slots[0]?.key ?? 'main');
+  const slots = asset ? mediaSlotsForAsset(asset, store) : [];
+  const [activeSlotKey, setActiveSlotKey] = useState(slots[0]?.key ?? 'concept');
+  const [dragFromIndex, setDragFromIndex] = useState<number | null>(null);
   const activeSlot = slots.find((slot) => slot.key === activeSlotKey) ?? slots[0];
-  const activeMedia = activeSlot ? asset.media?.[activeSlot.key] : undefined;
-  const emoji = String(getNested(asset.data, '__emoji') || defaultEmoji(asset.category));
+  const activeMedia = activeSlot && asset ? asset.media?.[activeSlot.key] : undefined;
+  const emoji = String((asset ? getNested(asset.data, '__emoji') : '') || defaultEmoji(asset?.category ?? ''));
+  if (!asset) return null;
 
   useEffect(() => {
     let url = '';
@@ -581,44 +685,76 @@ function ImageModal({ asset, onClose }: { asset: Asset; onClose: () => void }) {
     await store.setAssetMedia(asset.id, activeSlot, file);
   };
 
+  const handleSlotDragStart = (e: React.DragEvent, index: number) => {
+    e.dataTransfer.effectAllowed = 'move';
+    setDragFromIndex(index);
+  };
+  const handleSlotDrop = (e: React.DragEvent, toIndex: number) => {
+    e.preventDefault();
+    if (dragFromIndex !== null && dragFromIndex !== toIndex) {
+      store.reorderMediaSlot(asset.category, dragFromIndex, toIndex);
+    }
+    setDragFromIndex(null);
+  };
+
+  useEffect(() => {
+    const handleKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
   return (
     <Modal title="미디어 / 임시 이모지" onClose={onClose}>
-      <div className="grid grid-cols-[220px_280px_1fr] gap-5">
-        <div className="space-y-2">
-          {slots.map((slot) => {
-            const media = asset.media?.[slot.key];
-            return (
-              <button
-                key={slot.key}
-                className={`asset-media-slot ${activeSlot?.key === slot.key ? 'is-active' : ''}`}
-                onClick={() => setActiveSlotKey(slot.key)}
-              >
-                <strong>{slot.label}</strong>
-                <span>{slot.type}{media ? ` · ${media.fileName}` : ''}</span>
-              </button>
-            );
-          })}
-        </div>
+      <div className="flex gap-5" style={{ minHeight: 360 }}>
+        {/* Left: image preview — double-click to open file picker */}
         <div
-          className="asset-modal-preview checker"
-          onDrop={(event) => {
-            event.preventDefault();
-            upload(event.dataTransfer.files);
-          }}
+          className="asset-modal-preview checker shrink-0 self-start"
+          style={{ width: 480, aspectRatio: parseAspectRatio(activeSlot?.sizeHint) ?? 1, cursor: 'pointer' }}
+          onDoubleClick={() => inputRef.current?.click()}
+          onDrop={(event) => { event.preventDefault(); upload(event.dataTransfer.files); }}
           onDragOver={(event) => event.preventDefault()}
+          title="더블클릭으로 이미지 선택"
         >
-          {previewUrl ? <img className="max-h-full max-w-full object-contain image-pixelated" src={previewUrl} alt={asset.name} /> : <span>{emoji}</span>}
+          {previewUrl ? <img className="h-full w-full object-contain" src={previewUrl} alt={asset.name} /> : <span>{emoji}</span>}
         </div>
-        <div className="space-y-5">
+        {/* Right: slot list + controls */}
+        <div className="flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto">
+          {/* Slot list */}
+          <div className="space-y-2">
+            {slots.map((slot, index) => {
+              const media = asset.media?.[slot.key];
+              return (
+                <div
+                  key={slot.key}
+                  className={`flex items-center gap-1 transition-opacity ${dragFromIndex === index ? 'opacity-40' : ''}`}
+                  draggable
+                  onDragStart={(e) => handleSlotDragStart(e, index)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => handleSlotDrop(e, index)}
+                  onDragEnd={() => setDragFromIndex(null)}
+                >
+                  <span className="asset-drag-handle shrink-0 cursor-grab" title="순서 변경"><GripVertical /></span>
+                  <button
+                    className={`asset-media-slot flex-1 min-w-0 ${activeSlot?.key === slot.key ? 'is-active' : ''}`}
+                    onClick={() => setActiveSlotKey(slot.key)}
+                  >
+                    <strong>{slot.label}{slot.sizeHint && <span className="ml-1.5 text-[11px] font-normal text-slate-500">{slot.sizeHint}</span>}</strong>
+                    <span>{media ? media.fileName : '이미지 없음'}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {/* Upload controls */}
           <section>
-            <h3 className="text-sm font-bold text-slate-100">{activeSlot?.label ?? '미디어'} 삽입</h3>
-            <p className="mt-1 text-sm text-slate-500">파일을 드롭하거나 선택하세요. 스프라이트 시트와 카드 이미지는 슬롯별로 따로 저장됩니다.</p>
+            <h3 className="text-sm font-bold text-slate-100">
+              {activeSlot?.label ?? '미디어'} 삽입
+              {activeSlot?.sizeHint && <span className="ml-2 text-xs font-normal text-slate-500">{activeSlot.sizeHint}</span>}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">왼쪽 영역을 더블클릭하거나 파일을 드롭하세요.</p>
             <input ref={inputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => event.target.files && upload(event.target.files)} />
-            <button className="asset-primary-btn mt-3 h-10 px-4" onClick={() => inputRef.current?.click()}>
-              <Upload className="h-4 w-4" /> 파일 선택
-            </button>
             {activeSlot && activeMedia && (
-              <button className="ml-2 rounded border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" onClick={() => store.deleteAssetMedia(asset.id, activeSlot.key)}>
+              <button className="mt-3 rounded border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" onClick={() => store.deleteAssetMedia(asset.id, activeSlot.key)}>
                 삭제
               </button>
             )}
@@ -696,6 +832,20 @@ function BatchBar() {
 }
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
+  const [settingsTab, setSettingsTab] = useState<'menu' | 'weapon'>('menu');
+  return (
+    <Modal title="설정" onClose={onClose}>
+      <div className="mb-5 flex gap-2 border-b border-slate-800 pb-3">
+        <button className={`rounded-md px-4 py-2 text-sm font-bold transition-colors ${settingsTab === 'menu' ? 'bg-rose-900/60 text-white border border-rose-700' : 'text-slate-400 hover:text-slate-200'}`} onClick={() => setSettingsTab('menu')}>메뉴관리</button>
+        <button className={`rounded-md px-4 py-2 text-sm font-bold transition-colors ${settingsTab === 'weapon' ? 'bg-rose-900/60 text-white border border-rose-700' : 'text-slate-400 hover:text-slate-200'}`} onClick={() => setSettingsTab('weapon')}>무기</button>
+      </div>
+      {settingsTab === 'menu' && <MenuManagementTab />}
+      {settingsTab === 'weapon' && <WeaponSettingsTab />}
+    </Modal>
+  );
+}
+
+function MenuManagementTab() {
   const store = useEditorStore();
   const [categoryNameValue, setCategoryNameValue] = useState('');
   const [fieldDraft, setFieldDraft] = useState({ category: store.categories[0]?.key ?? '', label: '', type: 'text', options: '' });
@@ -712,19 +862,16 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('application/x-asset-editor-drag', JSON.stringify({ kind, index }));
   };
-
   const dropCategory = (event: React.DragEvent, toIndex: number) => {
     event.preventDefault();
     const payload = readDragPayload(event);
     if (payload?.kind === 'category') store.reorderCategory(payload.index, toIndex);
   };
-
   const dropField = (event: React.DragEvent, toIndex: number) => {
     event.preventDefault();
     const payload = readDragPayload(event);
     if (selectedFieldCategory && payload?.kind === 'field') store.reorderField(selectedFieldCategory.key, payload.index, toIndex);
   };
-
   const dropMediaSlot = (event: React.DragEvent, toIndex: number) => {
     event.preventDefault();
     const payload = readDragPayload(event);
@@ -732,124 +879,138 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Modal title="설정" onClose={onClose}>
-      <div className="grid grid-cols-2 gap-5">
-        <section>
-          <h3 className="mb-2 text-sm font-bold">카테고리</h3>
-          <div className="space-y-2">
-            {store.categories.map((category, index) => (
-              <div
-                key={category.key}
-                className="asset-draggable-row flex gap-2"
-                draggable
-                onDragStart={(event) => startDrag(event, 'category', index)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => dropCategory(event, index)}
-              >
-                <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
-                <input className="asset-input" value={category.name} onChange={(event) => store.renameCategory(category.key, event.target.value)} />
-                <IconButton label="삭제" onClick={() => window.confirm('이 카테고리와 포함 에셋을 삭제할까요?') && store.deleteCategory(category.key)}><Trash2 /></IconButton>
-              </div>
-            ))}
-          </div>
-          <div className="mt-3 flex gap-2">
-            <input className="asset-input" value={categoryNameValue} placeholder="새 카테고리" onChange={(event) => setCategoryNameValue(event.target.value)} />
-            <button className="asset-primary-btn px-3" onClick={() => { if (categoryNameValue.trim()) store.addCategory(categoryNameValue.trim()); setCategoryNameValue(''); }}>추가</button>
-          </div>
-        </section>
-        <section>
-          <h3 className="mb-2 text-sm font-bold">커스텀 필드</h3>
-          <div className="space-y-2">
-            <select className="asset-input" value={fieldDraft.category} onChange={(event) => setFieldDraft({ ...fieldDraft, category: event.target.value })}>
-              {store.categories.map((category) => <option key={category.key} value={category.key}>{category.name}</option>)}
-            </select>
-            <div className="space-y-2">
-              {selectedFieldCategory?.fields.length ? (
-                selectedFieldCategory.fields.map((field, index) => (
-                  <div
-                    key={field.key}
-                    className="asset-draggable-row flex gap-2"
-                    draggable
-                    onDragStart={(event) => startDrag(event, 'field', index)}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => dropField(event, index)}
-                  >
-                    <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
-                    <div className="asset-field-row-summary">
-                      <strong>{field.label}</strong>
-                      <span>{field.key} · {field.type}</span>
-                    </div>
-                    <IconButton label="필드 삭제" onClick={() => store.deleteField(selectedFieldCategory.key, field.key)}><Trash2 /></IconButton>
-                  </div>
-                ))
-              ) : (
-                <div className="asset-muted-box text-sm">이 카테고리에는 커스텀 필드가 없습니다.</div>
-              )}
+    <div className="grid grid-cols-2 gap-5">
+      <section>
+        <h3 className="mb-2 text-sm font-bold">카테고리</h3>
+        <div className="space-y-2">
+          {store.categories.map((category, index) => (
+            <div key={category.key} className="asset-draggable-row flex gap-2" draggable onDragStart={(event) => startDrag(event, 'category', index)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => dropCategory(event, index)}>
+              <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
+              <input className="asset-input" value={category.name} onChange={(event) => store.renameCategory(category.key, event.target.value)} />
+              <IconButton label="삭제" onClick={() => window.confirm('이 카테고리와 포함 에셋을 삭제할까요?') && store.deleteCategory(category.key)}><Trash2 /></IconButton>
             </div>
-            <div className="asset-muted-box space-y-2 text-sm">
-              <strong className="block text-slate-200">미디어 슬롯</strong>
-              {(selectedFieldCategory?.mediaSlots ?? []).map((slot, index) => (
-                <div
-                  key={slot.key}
-                  className="asset-draggable-row flex gap-2"
-                  draggable
-                  onDragStart={(event) => startDrag(event, 'mediaSlot', index)}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => dropMediaSlot(event, index)}
-                >
+          ))}
+        </div>
+        <div className="mt-3 flex gap-2">
+          <input className="asset-input" value={categoryNameValue} placeholder="새 카테고리" onChange={(event) => setCategoryNameValue(event.target.value)} />
+          <button className="asset-primary-btn px-3" onClick={() => { if (categoryNameValue.trim()) store.addCategory(categoryNameValue.trim()); setCategoryNameValue(''); }}>추가</button>
+        </div>
+      </section>
+      <section>
+        <h3 className="mb-2 text-sm font-bold">커스텀 필드</h3>
+        <div className="space-y-2">
+          <select className="asset-input" value={fieldDraft.category} onChange={(event) => setFieldDraft({ ...fieldDraft, category: event.target.value })}>
+            {store.categories.map((category) => <option key={category.key} value={category.key}>{category.name}</option>)}
+          </select>
+          <div className="space-y-2">
+            {selectedFieldCategory?.fields.length ? (
+              selectedFieldCategory.fields.map((field, index) => (
+                <div key={field.key} className="asset-draggable-row flex gap-2" draggable onDragStart={(event) => startDrag(event, 'field', index)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => dropField(event, index)}>
                   <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
                   <div className="asset-field-row-summary">
-                    <strong>{slot.label}</strong>
-                    <span>{slot.key} · {slot.type}</span>
+                    <strong>{field.label}</strong>
+                    <span>{field.key} · {field.type}</span>
                   </div>
-                  <IconButton label="미디어 슬롯 삭제" onClick={() => selectedFieldCategory && store.deleteMediaSlot(selectedFieldCategory.key, slot.key)}><Trash2 /></IconButton>
+                  <IconButton label="필드 삭제" onClick={() => store.deleteField(selectedFieldCategory.key, field.key)}><Trash2 /></IconButton>
                 </div>
-              ))}
-              <div className="grid grid-cols-[1fr_130px_auto] gap-2">
-                <input className="asset-input" placeholder="슬롯 이름" value={mediaSlotDraft.label} onChange={(event) => setMediaSlotDraft({ ...mediaSlotDraft, label: event.target.value })} />
-                <select className="asset-input" value={mediaSlotDraft.type} onChange={(event) => setMediaSlotDraft({ ...mediaSlotDraft, type: event.target.value as MediaSlotType })}>
-                  <option value="image">이미지</option>
-                  <option value="spriteSheet">스프라이트 시트</option>
-                  <option value="card">카드</option>
-                </select>
-                <button className="asset-primary-btn px-3" onClick={() => {
-                  if (!selectedFieldCategory || !mediaSlotDraft.label.trim()) return;
-                  store.addMediaSlot(selectedFieldCategory.key, {
-                    key: safeId(mediaSlotDraft.label) || `media_${Date.now()}`,
-                    label: mediaSlotDraft.label.trim(),
-                    type: mediaSlotDraft.type,
-                  });
-                  setMediaSlotDraft({ ...mediaSlotDraft, label: '' });
-                }}>추가</button>
-              </div>
-            </div>
-            <input className="asset-input" placeholder="필드 이름" value={fieldDraft.label} onChange={(event) => setFieldDraft({ ...fieldDraft, label: event.target.value })} />
-            <select className="asset-input" value={fieldDraft.type} onChange={(event) => setFieldDraft({ ...fieldDraft, type: event.target.value })}>
-              <option value="text">텍스트</option>
-              <option value="textarea">멀티라인</option>
-              <option value="number">숫자</option>
-              <option value="boolean">불리언</option>
-              <option value="enum">선택</option>
-              <option value="multiselect">다중선택</option>
-              <option value="color">컬러 피커</option>
-              <option value="assetRef">에셋 참조</option>
-              <option value="slider">슬라이더</option>
-            </select>
-            <input className="asset-input" placeholder="옵션: 쉼표로 구분" value={fieldDraft.options} onChange={(event) => setFieldDraft({ ...fieldDraft, options: event.target.value })} />
-            <button className="asset-primary-btn h-10 px-3" onClick={() => {
-              if (!fieldDraft.label.trim()) return;
-              store.addField(fieldDraft.category, {
-                key: safeId(fieldDraft.label) || `field_${Date.now()}`,
-                label: fieldDraft.label,
-                type: fieldDraft.type as CustomField['type'],
-                options: fieldDraft.options.split(',').map((item) => item.trim()).filter(Boolean),
-              });
-              setFieldDraft({ ...fieldDraft, label: '', options: '' });
-            }}>필드 추가</button>
+              ))
+            ) : (
+              <div className="asset-muted-box text-sm">이 카테고리에는 커스텀 필드가 없습니다.</div>
+            )}
           </div>
-        </section>
-      </div>
-    </Modal>
+          <div className="asset-muted-box space-y-2 text-sm">
+            <strong className="block text-slate-200">미디어 슬롯</strong>
+            {(selectedFieldCategory?.mediaSlots ?? []).map((slot, index) => (
+              <div key={slot.key} className="asset-draggable-row flex gap-2" draggable onDragStart={(event) => startDrag(event, 'mediaSlot', index)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => dropMediaSlot(event, index)}>
+                <span className="asset-drag-handle" title="순서 변경"><GripVertical /></span>
+                <div className="asset-field-row-summary">
+                  <strong>{slot.label}</strong>
+                  <span>{slot.key} · {slot.type}</span>
+                </div>
+                <IconButton label="미디어 슬롯 삭제" onClick={() => selectedFieldCategory && store.deleteMediaSlot(selectedFieldCategory.key, slot.key)}><Trash2 /></IconButton>
+              </div>
+            ))}
+            <div className="grid grid-cols-[1fr_130px_auto] gap-2">
+              <input className="asset-input" placeholder="슬롯 이름" value={mediaSlotDraft.label} onChange={(event) => setMediaSlotDraft({ ...mediaSlotDraft, label: event.target.value })} />
+              <select className="asset-input" value={mediaSlotDraft.type} onChange={(event) => setMediaSlotDraft({ ...mediaSlotDraft, type: event.target.value as MediaSlotType })}>
+                <option value="image">이미지</option>
+                <option value="spriteSheet">스프라이트 시트</option>
+                <option value="card">카드</option>
+              </select>
+              <button className="asset-primary-btn px-3" onClick={() => {
+                if (!selectedFieldCategory || !mediaSlotDraft.label.trim()) return;
+                store.addMediaSlot(selectedFieldCategory.key, { key: safeId(mediaSlotDraft.label) || `media_${Date.now()}`, label: mediaSlotDraft.label.trim(), type: mediaSlotDraft.type });
+                setMediaSlotDraft({ ...mediaSlotDraft, label: '' });
+              }}>추가</button>
+            </div>
+          </div>
+          <input className="asset-input" placeholder="필드 이름" value={fieldDraft.label} onChange={(event) => setFieldDraft({ ...fieldDraft, label: event.target.value })} />
+          <select className="asset-input" value={fieldDraft.type} onChange={(event) => setFieldDraft({ ...fieldDraft, type: event.target.value })}>
+            <option value="text">텍스트</option>
+            <option value="textarea">멀티라인</option>
+            <option value="number">숫자</option>
+            <option value="boolean">불리언</option>
+            <option value="enum">선택</option>
+            <option value="multiselect">다중선택</option>
+            <option value="color">컬러 피커</option>
+            <option value="assetRef">에셋 참조</option>
+            <option value="slider">슬라이더</option>
+          </select>
+          <input className="asset-input" placeholder="옵션: 쉼표로 구분" value={fieldDraft.options} onChange={(event) => setFieldDraft({ ...fieldDraft, options: event.target.value })} />
+          <button className="asset-primary-btn h-10 px-3" onClick={() => {
+            if (!fieldDraft.label.trim()) return;
+            store.addField(fieldDraft.category, { key: safeId(fieldDraft.label) || `field_${Date.now()}`, label: fieldDraft.label, type: fieldDraft.type as CustomField['type'], options: fieldDraft.options.split(',').map((item) => item.trim()).filter(Boolean) });
+            setFieldDraft({ ...fieldDraft, label: '', options: '' });
+          }}>필드 추가</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WeaponSettingsTab() {
+  const store = useEditorStore();
+  const ws = store.weaponSettings;
+  return (
+    <div className="space-y-6">
+      <section>
+        <h3 className="mb-3 text-sm font-bold text-slate-200">수치 최대치</h3>
+        <div className="grid grid-cols-3 gap-4">
+          <FieldLabel label="단계 최대치">
+            <input type="number" className="asset-input" min={1} max={10} value={ws.tierMax}
+              onChange={(e) => store.setWeaponSettings({ ...ws, tierMax: Math.max(1, Math.min(10, Number(e.target.value))) })} />
+          </FieldLabel>
+          <FieldLabel label="사거리 최대치">
+            <input type="number" className="asset-input" min={1} max={50} value={ws.rangeMax}
+              onChange={(e) => store.setWeaponSettings({ ...ws, rangeMax: Math.max(1, Math.min(50, Number(e.target.value))) })} />
+          </FieldLabel>
+          <FieldLabel label="AP 소모 최대치">
+            <input type="number" className="asset-input" min={1} max={20} value={ws.apCostMax}
+              onChange={(e) => store.setWeaponSettings({ ...ws, apCostMax: Math.max(1, Math.min(20, Number(e.target.value))) })} />
+          </FieldLabel>
+        </div>
+      </section>
+      <section>
+        <h3 className="mb-3 text-sm font-bold text-slate-200">희귀도 옵션</h3>
+        <div className="flex flex-wrap gap-4">
+          {(Object.keys(rarityLabels) as Rarity[]).map((rarity) => (
+            <label key={rarity} className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={ws.rarityOptions.includes(rarity)}
+                onChange={(e) => {
+                  const options = e.target.checked
+                    ? [...ws.rarityOptions, rarity]
+                    : ws.rarityOptions.filter((r) => r !== rarity);
+                  if (options.length > 0) store.setWeaponSettings({ ...ws, rarityOptions: options });
+                }}
+              />
+              {rarityLabels[rarity]}
+            </label>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1002,6 +1163,16 @@ function defaultEmoji(category: string) {
 function mediaSlotsForAsset(asset: Asset, state: ProjectState): MediaSlot[] {
   const category = state.categories.find((item) => item.key === asset.category);
   return category?.mediaSlots?.length ? category.mediaSlots : [{ key: 'main', label: '대표 이미지', type: 'image' }];
+}
+
+function parseAspectRatio(sizeHint?: string): number | undefined {
+  if (!sizeHint) return undefined;
+  const match = sizeHint.match(/(\d+)\s*[×x]\s*(\d+)/i);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return undefined;
+  return width / height;
 }
 
 function spriteLabel(key: 'frameWidth' | 'frameHeight' | 'columns' | 'rows' | 'fps') {

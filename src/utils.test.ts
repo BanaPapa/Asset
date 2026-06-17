@@ -26,6 +26,7 @@ function projectWithAssetId(id: string): ProjectState {
     theme: 'system',
     viewMode: 'list',
     search: '',
+    weaponSettings: { tierMax: 5, rangeMax: 20, apCostMax: 10, rarityOptions: ['common', 'rare', 'epic', 'legendary'] },
   };
 }
 

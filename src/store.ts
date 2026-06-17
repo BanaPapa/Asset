@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { db, initialProjectState, loadSnapshot, saveImportBackup, saveSnapshot } from './db';
 import { createAsset, defaultDataForCategory, slugify } from './defaults';
-import type { Asset, Category, CustomField, MediaSlot, ProjectState, Rarity, SpriteSheetMeta } from './types';
+import type { Asset, Category, CustomField, MediaSlot, ProjectState, Rarity, SpriteSheetMeta, WeaponSettings } from './types';
 import { findIncomingReferences, moveArrayItem, safeId, setNested } from './utils';
 
 interface EditorStore extends ProjectState {
@@ -40,6 +40,7 @@ interface EditorStore extends ProjectState {
   setAssetMedia: (assetId: string, slot: MediaSlot, file: File) => Promise<void>;
   updateAssetMediaSprite: (assetId: string, slotKey: string, sprite: SpriteSheetMeta) => void;
   deleteAssetMedia: (assetId: string, slotKey: string) => void;
+  setWeaponSettings: (settings: WeaponSettings) => void;
   importProject: (state: ProjectState, mode: 'replace' | 'merge') => Promise<void>;
   undo: () => void;
   redo: () => void;
@@ -55,6 +56,7 @@ const selectState = (state: ProjectState): ProjectState => ({
   theme: state.theme,
   viewMode: state.viewMode,
   search: state.search,
+  weaponSettings: state.weaponSettings,
 });
 
 function commit(set: (fn: (state: EditorStore) => Partial<EditorStore>) => void, recipe: (draft: EditorStore) => Partial<EditorStore>) {
@@ -320,6 +322,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }));
     db.mediaImages.delete(mediaRecordId(assetId, slotKey));
   },
+  setWeaponSettings: (weaponSettings) => commit(set, () => ({ weaponSettings })),
   importProject: async (incoming, mode) => {
     await saveImportBackup(selectState(get()));
     commit(set, (state) => {
@@ -402,14 +405,6 @@ async function readImageMeta(file: File) {
   };
 }
 
-async function makeThumbnail(file: File) {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(128 / bitmap.width, 128 / bitmap.height, 1);
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const context = canvas.getContext('2d')!;
-  context.imageSmoothingEnabled = false;
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return new Promise<Blob>((resolve) => canvas.toBlob((blob) => resolve(blob ?? file), 'image/png'));
+function makeThumbnail(file: File): Promise<Blob> {
+  return Promise.resolve(file);
 }

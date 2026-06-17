@@ -64,6 +64,12 @@ export const initialProjectState: ProjectState = {
   theme: 'system',
   viewMode: 'list',
   search: '',
+  weaponSettings: {
+    tierMax: 5,
+    rangeMax: 20,
+    apCostMax: 10,
+    rarityOptions: ['common', 'rare', 'epic', 'legendary'],
+  },
 };
 
 export async function loadSnapshot() {
@@ -92,13 +98,20 @@ function normalizeProjectState(state: ProjectState): ProjectState {
   return {
     ...state,
     projectName: state.projectName === 'my-game' ? 'project-star' : state.projectName,
+    weaponSettings: state.weaponSettings ?? initialProjectState.weaponSettings,
     categories: [
       ...state.categories.map((category) => {
         const defaults = defaultCategoryMap.get(category.key);
+        const defaultSlots = defaults?.mediaSlots ?? [];
+        const currentSlots = category.mediaSlots ?? [];
+        // Migrate media slots when legacy keys ('main', 'misc') are detected
+        const legacyKeys = new Set(['main', 'misc', 'effect_preview']);
+        const hasLegacySlot = currentSlots.some((s) => legacyKeys.has(s.key));
+        const migratedSlots = !currentSlots.length || hasLegacySlot ? defaultSlots : currentSlots;
         return {
           ...category,
           fields: category.fields?.length ? category.fields : defaults?.fields ?? [],
-          mediaSlots: category.mediaSlots?.length ? category.mediaSlots : defaults?.mediaSlots ?? [],
+          mediaSlots: migratedSlots,
         };
       }),
       ...defaultCategories.filter((category) => !existingCategoryKeys.has(category.key)),
