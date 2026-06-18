@@ -195,6 +195,7 @@ function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDel
   const store = useEditorStore();
   const [newCategory, setNewCategory] = useState(store.categories[0]?.key ?? 'character');
   const [contextMenu, setContextMenu] = useState<{ assetId: string; x: number; y: number } | null>(null);
+  const [categoryContextMenu, setCategoryContextMenu] = useState<{ categoryKey: string; x: number; y: number } | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
@@ -228,15 +229,15 @@ function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDel
   };
 
   useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
+    if (!contextMenu && !categoryContextMenu) return;
+    const close = () => { setContextMenu(null); setCategoryContextMenu(null); };
     window.addEventListener('click', close);
     window.addEventListener('keydown', close);
     return () => {
       window.removeEventListener('click', close);
       window.removeEventListener('keydown', close);
     };
-  }, [contextMenu]);
+  }, [contextMenu, categoryContextMenu]);
 
   return (
     <aside className="asset-sidebar flex min-h-0 flex-col">
@@ -269,7 +270,15 @@ function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDel
                     const items = filtered.filter((asset) => asset.category === category.key);
                     return (
                       <section key={category.key} className="mb-1">
-                        <button className="asset-category-title" onClick={() => store.toggleCategory(category.key)}>
+                        <button
+                          className="asset-category-title"
+                          onClick={() => store.toggleCategory(category.key)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setContextMenu(null);
+                            setCategoryContextMenu({ categoryKey: category.key, x: event.clientX, y: event.clientY });
+                          }}
+                        >
                           {category.collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                           <span>{category.name}</span>
                           <span className="ml-auto">{items.length}</span>
@@ -304,6 +313,19 @@ function AssetSidebar({ onDelete, onDeleteAsset }: { onDelete: () => void; onDel
             onClick={() => {
               onDeleteAsset(contextMenu.assetId);
               setContextMenu(null);
+            }}
+          >
+            <Trash2 className="h-4 w-4" /> 삭제
+          </button>
+        </div>
+      )}
+      {categoryContextMenu && (
+        <div className="asset-context-menu" style={{ left: categoryContextMenu.x, top: categoryContextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button
+            onClick={() => {
+              const key = categoryContextMenu.categoryKey;
+              setCategoryContextMenu(null);
+              if (window.confirm('이 카테고리와 포함 에셋을 삭제할까요?')) store.deleteCategory(key);
             }}
           >
             <Trash2 className="h-4 w-4" /> 삭제

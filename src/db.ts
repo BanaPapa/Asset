@@ -89,12 +89,19 @@ function normalizeProjectState(state: ProjectState): ProjectState {
   const defaultCategoryMap = new Map(defaultCategories.map((category) => [category.key, category]));
   const existingCategoryKeys = new Set(state.categories.map((category) => category.key));
   const existingAssetIds = new Set(state.assets.map((asset) => asset.id));
+  const starterAssetMap = new Map(projectStarStarterAssets.map((asset) => [asset.id, asset]));
   const starterAssetsToAdd = projectStarStarterAssets.filter((asset) => !existingAssetIds.has(asset.id));
-  const assets = [...state.assets, ...starterAssetsToAdd].map((asset, index) => ({
-    ...asset,
-    sortOrder: asset.sortOrder ?? index,
-    media: asset.media ?? (asset.image ? { main: { ...asset.image, slotKey: 'main', slotType: 'image' as const } } : undefined),
-  }));
+  const assets = [...state.assets, ...starterAssetsToAdd].map((asset, index) => {
+    const starterDefault = starterAssetMap.get(asset.id);
+    // Merge updated starter defaults into existing assets: new fields get default values, user edits are preserved
+    const mergedData = starterDefault ? { ...starterDefault.data, ...asset.data } : asset.data;
+    return {
+      ...asset,
+      data: mergedData,
+      sortOrder: asset.sortOrder ?? index,
+      media: asset.media ?? (asset.image ? { main: { ...asset.image, slotKey: 'main', slotType: 'image' as const } } : undefined),
+    };
+  });
   return {
     ...state,
     projectName: state.projectName === 'my-game' ? 'project-star' : state.projectName,
@@ -108,9 +115,13 @@ function normalizeProjectState(state: ProjectState): ProjectState {
         const legacyKeys = new Set(['main', 'misc', 'effect_preview']);
         const hasLegacySlot = currentSlots.some((s) => legacyKeys.has(s.key));
         const migratedSlots = !currentSlots.length || hasLegacySlot ? defaultSlots : currentSlots;
+        // Merge new default fields into existing category schema (preserves custom fields, adds new defaults)
+        const existingFieldKeys = new Set((category.fields ?? []).map((f) => f.key));
+        const newDefaultFields = (defaults?.fields ?? []).filter((f) => !existingFieldKeys.has(f.key));
+        const mergedFields = [...(category.fields ?? []), ...newDefaultFields];
         return {
           ...category,
-          fields: category.fields?.length ? category.fields : defaults?.fields ?? [],
+          fields: mergedFields.length ? mergedFields : (defaults?.fields ?? []),
           mediaSlots: migratedSlots,
         };
       }),
